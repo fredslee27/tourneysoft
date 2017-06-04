@@ -10,9 +10,10 @@ AUTHORS = [
 COPYRIGHT_LINE="Copyright 2017 Fred Lee <fredslee27@gmail.com"
 
 
-import gi
-gi.require_version('Gtk', '3.0')
-from gi.repository import Gtk, Gdk, Gio, GLib, GObject
+import gtk  # Gtk 2.x
+# Gtk2: because gtk2 likely to be ported to other platforms.
+
+gtk.check_version(2, 20, 0)
 
 import sys, os
 
@@ -29,7 +30,7 @@ import threading
 import json
 
 
-LICENSE_GTK = Gtk.License.GPL_2_0
+#LICENSE_GTK = Gtk.License.GPL_2_0
 
 # If game list file not found, use this as default contents.
 BUILTIN_GAMELIST = """\
@@ -174,10 +175,11 @@ build_ui() to populate UI.
 """
     def __init__ (self):
         self.ui = self.make_ui()
-    def make_ui (self, orientation=None):
-        if orientation is None:
-            orientation = Gtk.Orientation.HORIZONTAL
-        ui = Gtk.Box(orientation=orientation)
+    def make_ui (self, substrate=None):
+        if substrate is None:
+            ui = gtk.HBox()
+        else:
+            ui = substrate
         self.build_ui(ui)
         ui.paneling = self
         return ui
@@ -203,24 +205,24 @@ class MainPaneling (BasePaneling):
         pass
         
 
-class SignupsMainW (Gtk.Window):
+class SignupsMainW (gtk.Window):
     """Main window for signups."""
     def __init__ (self, subtitle=None):
-        Gtk.Window.__init__(self)
+        gtk.Window.__init__(self)
         self.build_ui(self, subtitle=subtitle)
 
     def build_ui (self, ui, subtitle=None):
         ui.set_size_request(640, 480)
         if subtitle is not None:
             self.set_subtitle(subtitle)
-        ui.layout = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        ui.layout = gtk.VBox()
         ui.add(ui.layout)
-        self.menubar = Gtk.MenuBar()
+        self.menubar = gtk.MenuBar()
         self.central = MainPaneling()
-        self.statusbar = Gtk.Statusbar()
-        ui.layout.pack_start(self.menubar, True, False, 0)
+        self.statusbar = gtk.Statusbar()
+        ui.layout.pack_start(self.menubar, False, True, 0)
         ui.layout.pack_start(self.central.ui, True, True, 0)
-        ui.layout.pack_start(self.statusbar, True, False, 0)
+        ui.layout.pack_start(self.statusbar, False, True, 0)
         return ui
 
     def set_subtitle (self, subtitle):
@@ -228,19 +230,23 @@ class SignupsMainW (Gtk.Window):
         self._full_title = "{}: {}".format(self.base_title, self.subtitle)
         self.set_title(self.full_title)
 
+    def present_menubar (self, menudesc):
+        pass
 
 
-class SignupsUI (GObject.GObject):
-    """UI state information.
-Lives beyond lifetime of the GUI, which may taken away by toplevel Application and respawned later with persistent data.
+
+class SignupsUI (object):
+    """UI state information and event handler.
+Collects the various windows together if there are multiple.
+Connects UI elements to actions (no store-modifying within widget instances).
 """
     # Intended to be subsumed into a larger "Tournament" GtkApplication,
     # so there shouldn't be a corresponding Signups(Gtk.Application).
-    def __init__ (self):
-        GObject.GObject.__init__(self)
+    def __init__ (self, store=None):
         self.basetitle = "Signups"
-        self.store = SignupsStore()
-        self.store_actions = Gtk.ActionGroup()
+        if store is None:
+            store = SignupsStore()
+        self.store = store
         self.build_ops()
         self.build_ui()
 
@@ -248,8 +254,35 @@ Lives beyond lifetime of the GUI, which may taken away by toplevel Application a
         self.mainw = SignupsMainW()
         self.mainw.connect("delete-event", self.on_close_main)
 
-    def make_main_menubar (self):
-        menubar = Gtk.MenuBar()
+    def make_main_window (self, subtitle=None):
+        mainw = gtk.Window()
+        full_title = ""
+        if subtitle:
+            full_title = "{}: {}".format(self.basetitle, subtitle)
+        else:
+            full_title = self.basetitle
+        mainw.set_title(full_title)
+        mainw.set_size_request(640, 480)
+
+    def build_main_menubar (self):
+        MENUDESC = """<?xml version="1.0"?>
+<ui>
+  <menubar>
+    <menu name="_File" action="act_FileMenu">
+      <menuitem name="_New" action="act_file_new"/>
+      <menuitem name="_Open" action="act_file_open"/>
+      <menuitem name="_Save" action="act_file_save"/>
+      <menuitem name="Save _As" action="act_file_saveas"/>
+      <separator/>
+      <menuitem name="_Quit" action="act_quit"/>
+    </menu>
+    <menu name="_Help" action="act_HelpMenu">
+      <menuitem name="_Contents" action="act_help_contents"/>
+      <menuitem name="_About" action="act_help_about"/>
+    </menu>
+  </menubar>
+</ui>
+"""
         return menubar
 
     def build_ops (self):
@@ -261,11 +294,11 @@ Reverse operation may be a lambda that yields an action+arguments tuple.
 
     def on_close_main (self, w, *args):
         # TODO: confirm save.
-        Gtk.main_quit()
+        gtk.main_quit()
 
 
 if __name__ == "__main__":
     ui = SignupsUI()
     ui.mainw.show_all()
-    Gtk.main()
+    gtk.main()
 
