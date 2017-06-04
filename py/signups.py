@@ -10,6 +10,8 @@ AUTHORS = [
 COPYRIGHT_LINE="Copyright 2017 Fred Lee <fredslee27@gmail.com"
 
 
+import gi
+gi.require_version('Gtk', '3.0')
 from gi.repository import Gtk, Gdk, Gio, GLib, GObject
 
 import sys, os
@@ -32,8 +34,11 @@ LICENSE_GTK = Gtk.License.GPL_2_0
 # If game list file not found, use this as default contents.
 BUILTIN_GAMELIST = """\
 GGX=Guilty Gear X
-XRD=Guilty Gear Xrd
+XRD=Guilty Gear Xrd Sign
+XRDR=Guilty Gear Xrd Revelator
+REV2=Guilty Gear Xrd Rev 2
 ACR=Guilty Gear XX Accent Core +R
+BBCF=BlazBlue Central Fiction
 P4A=Persona 4 Arena
 P4AU=Persona 4 Arena Ultimax
 UNIB=Under Night In-Birth
@@ -57,12 +62,11 @@ FILEEXT = "cburst"
 
 
 def string_as_file (s):
+    import io
     try:
-        import io
         return io.StringIO(s)
-    except ImportError:
-        import StringIO
-        return StringIO.StringIO(s)
+    except TypeError:
+        return io.StringIO(unicode(s))
 
 
 class Gamelist (list):
@@ -70,8 +74,16 @@ class Gamelist (list):
 Elements are 2-tuples of: (short_name, long_name)
 """
     def __init__ (self, *args, **kwargs):
+        """__init__ (self, fileobj=None)
+If fileobj is not specified, use builtin gamelist.
+        """
         list.__init__(self, *args, **kwargs)
-        self.import_file(None)
+        if len(args) > 0:
+            self.import_file(args[0])
+        elif "fileobj" in kwargs:
+            self.import_file(kwargs["fileobj"])
+        else:
+            self.import_file(None)
 
     def __getitem__ (self, short_name):
         # Given short name, return reference to the corresponding entry in the list.
@@ -148,18 +160,27 @@ Provisional links to exported tournaments (e.g. Challonge)
 
 
 
+
+
+
+
+
 class BasePaneling (object):
     """Paneling pattern:
 Keep local field 'ui' holding Gtk widget.
-Keep local data outside of ui elements.
+Keep local data (extended ui state) outside of ui elements.
 make_ui() in super to create from scratch.
 build_ui() to populate UI.
 """
     def __init__ (self):
         self.ui = self.make_ui()
-    def make_ui (self):
-        ui = Gtk.HBox()
+    def make_ui (self, orientation=None):
+        if orientation is None:
+            orientation = Gtk.Orientation.HORIZONTAL
+        ui = Gtk.Box(orientation=orientation)
         self.build_ui(ui)
+        ui.paneling = self
+        return ui
 
 class GamelistPaneling (BasePaneling):
     """Window panel (tab?) for modifying gamelist."""
@@ -168,43 +189,83 @@ class GamelistPaneling (BasePaneling):
 
 class EntrantlistPaneling (BasePaneling):
     """Window panel (tab?) for modifying entrants list: Player name and games desired."""
-    def build_ui (self, ui=None):
+    def build_ui (self, ui):
         pass
 
-class BracketPaneling (object):
+class BracketPaneling (BasePaneling):
     """Panel/tab for handling tournament exports (setting up brackets)."""
-    def build_ui (self, ui=None):
+    def build_ui (self, ui):
         pass
+
+class MainPaneling (BasePaneling):
+    """Main window, signups."""
+    def build_ui (self, ui):
+        pass
+        
 
 class SignupsMainW (Gtk.Window):
     """Main window for signups."""
-    def __init__ (self):
+    def __init__ (self, subtitle=None):
         Gtk.Window.__init__(self)
-        self.set_size_request(640, 480)
-        self.base_title = "Signups"
-        self.set_title(self.base_title)
+        self.build_ui(self, subtitle=subtitle)
+
+    def build_ui (self, ui, subtitle=None):
+        ui.set_size_request(640, 480)
+        if subtitle is not None:
+            self.set_subtitle(subtitle)
+        ui.layout = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        ui.add(ui.layout)
+        self.menubar = Gtk.MenuBar()
+        self.central = MainPaneling()
+        self.statusbar = Gtk.Statusbar()
+        ui.layout.pack_start(self.menubar, True, False, 0)
+        ui.layout.pack_start(self.central.ui, True, True, 0)
+        ui.layout.pack_start(self.statusbar, True, False, 0)
+        return ui
 
     def set_subtitle (self, subtitle):
         self.subtitle = subtitle
-        self.full_title = "{}: {}".format(self.base_title, self.subtitle)
+        self._full_title = "{}: {}".format(self.base_title, self.subtitle)
         self.set_title(self.full_title)
+
 
 
 class SignupsUI (GObject.GObject):
     """UI state information.
-Intended to be subsumed into a larger "Tournament" GtkApplication,
-so there shouldn't be a corresponding Signups(Gtk.Application).
+Lives beyond lifetime of the GUI, which may taken away by toplevel Application and respawned later with persistent data.
 """
+    # Intended to be subsumed into a larger "Tournament" GtkApplication,
+    # so there shouldn't be a corresponding Signups(Gtk.Application).
     def __init__ (self):
-        Gtk.Object.__init__(self)
-        self.actions = []   # List of Gtk.Action.
+        GObject.GObject.__init__(self)
+        self.basetitle = "Signups"
+        self.store = SignupsStore()
+        self.store_actions = Gtk.ActionGroup()
+        self.build_ops()
+        self.build_ui()
 
-    def build_main_window (self):
-        pass
+    def build_ui (self):
+        self.mainw = SignupsMainW()
+        self.mainw.connect("delete-event", self.on_close_main)
+
+    def make_main_menubar (self):
+        menubar = Gtk.MenuBar()
+        return menubar
 
     def build_ops (self):
         """To support Undo, all actions affecting data should have a forward and reverse operation.
 Operations without a reversible counterpart destroy Undo history.
 Reverse operation may be a lambda that yields an action+arguments tuple.
 """
+        pass
+
+    def on_close_main (self, w, *args):
+        # TODO: confirm save.
+        Gtk.main_quit()
+
+
+if __name__ == "__main__":
+    ui = SignupsUI()
+    ui.mainw.show_all()
+    Gtk.main()
 

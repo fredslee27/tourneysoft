@@ -19,6 +19,9 @@ class TestSignups (unittest.TestCase):
         self.assertIsNotNone(undo)
         self.assertTrue("do_remove_player" in undo[0])
 
+    def test_ui0 (self):
+        subj = signups.SignupsUI()
+
 
 if __name__ == "__main__":
     unittest.main()
