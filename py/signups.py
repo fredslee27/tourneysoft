@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 # Tournament Software Suite: Signups module.
+# Use checkpointing to avoid explicit Open/save.
 
 PACKAGE="CaliforniaBurst"
 VERSION="0.1"
@@ -8,6 +9,7 @@ AUTHORS = [
   "Fred Lee <fredslee27@gmail.com>"
   ]
 COPYRIGHT_LINE="Copyright 2017 Fred Lee <fredslee27@gmail.com"
+APP_DESCRIPTION="GUI for handling tournament signups."""
 
 
 import gtk  # Gtk 2.x
@@ -166,6 +168,7 @@ Provisional links to exported tournaments (e.g. Challonge)
 
 
 
+
 class BasePaneling (object):
     """Paneling pattern:
 Keep local field 'ui' holding Gtk widget.
@@ -173,11 +176,12 @@ Keep local data (extended ui state) outside of ui elements.
 make_ui() in super to create from scratch.
 build_ui() to populate UI.
 """
+    SUBSTRATE = gtk.HBox
     def __init__ (self):
         self.ui = self.make_ui()
     def make_ui (self, substrate=None):
         if substrate is None:
-            ui = gtk.HBox()
+            ui = self.SUBSTRATE()
         else:
             ui = substrate
         self.build_ui(ui)
@@ -201,14 +205,27 @@ class BracketPaneling (BasePaneling):
 
 class MainPaneling (BasePaneling):
     """Main window, signups."""
+    SUBSTRATE = gtk.Notebook
     def build_ui (self, ui):
-        pass
-        
+        ui.gamelist = GamelistPaneling()
+        ui.entrantlist = EntrantlistPaneling()
+        ui.bracketing = BracketPaneling()
+        ui.set_tab_pos(gtk.POS_LEFT)
+        ui.append_page(ui.gamelist.ui, gtk.Label("1 Gamelist"))
+        ui.append_page(ui.entrantlist.ui, gtk.Label("2 Signups"))
+
 
 class SignupsMainW (gtk.Window):
     """Main window for signups."""
-    def __init__ (self, subtitle=None, menubar=None):
+    def __init__ (self, subtitle=None, menubar=None, presetlist_model=None, gamelist_model=None, entrantlist_model=None, bracketlist_model=None):
         gtk.Window.__init__(self)
+        # list of games
+        self.presetlist_model = presetlist_model
+        self.gamelist_model = gamelist_model
+        # list of entrants
+        self.entrantlist_model = entrantlist_model
+        # list of tracked exported brackets.
+        self.bracketlist_model = bracketlist_model
         self.build_ui(self, subtitle=subtitle, menubar=menubar)
 
     def build_ui (self, ui, subtitle=None, menubar=None):
@@ -233,6 +250,15 @@ class SignupsMainW (gtk.Window):
     def present_menubar (self, menudesc):
         pass
 
+class SignupsAboutW (gtk.AboutDialog):
+    """About dialog."""
+    def __init__ (self):
+        gtk.AboutDialog.__init__(self)
+        self.set_name(PACKAGE)
+        self.set_version(VERSION)
+        self.set_license("GNU General Public License v2.0 or later")
+        self.set_authors(AUTHORS)
+        self.set_comments(APP_DESCRIPTION)
 
 
 class SignupsUI (object):
@@ -257,6 +283,7 @@ Connects UI elements to actions (no store-modifying within widget instances).
         self.menubar = self.build_main_menubar()
         self.mainw = SignupsMainW(menubar=self.menubar)
         self.mainw.connect("delete-event", self.on_close_main)
+        self.aboutdlg = SignupsAboutW()
 
     def make_main_window (self, subtitle=None):
         mainw = gtk.Window()
@@ -336,6 +363,8 @@ submenu when action is menudesc (i.e. list of 3-tuples)
             self.act_file_save,
             self.act_file_saveas,
             None,
+            self.act_file_close,
+            None,
             self.act_quit,
             ]),
           ('_Edit', [
@@ -365,36 +394,23 @@ Reverse operation may be a lambda that yields an action+arguments tuple.
             act = gtk.Action(name, label, hint, stockid)
             act.connect("activate", cb)
             act.set_accel_group(self.accel_group)
-#            act.set_accel_path("<window>/Main")
-#            keyval, keymod = None, None
-#            if isinstance(hotkey, tuple):
-#                keyval, keymod = hotkey
-#            elif hotkey:
-#                keyval, keymod = gtk.accelerator_parse(hotkey)
-#            elif stockid:
-#                stockinfo = gtk.stock_lookup(stockid)
-#                if stockinfo:
-#                    sid, slbl, smod, skval, std = stockinfo
-#                    keyval, keymod = skval, smod
-#                    print("Using stock accel %r,%r" % (keyval, keymod))
-##            if keyval:
-##                self.accel_group.connect_group(keyval, keymod, gtk.ACCEL_VISIBLE, self.on_accel)
             self.action_group.add_action_with_accel(act, hotkey)
             act.connect_accelerator()
             self.__dict__.__setitem__(name, act)
         make_action("act_file_new", "_New", "Create new session", gtk.STOCK_NEW, self.nop, "<Control>n")
-        make_action("act_file_open", "_Open", "Open saved session", gtk.STOCK_OPEN, self.on_file_open)
-        make_action("act_file_save", "_Save", "Save session", gtk.STOCK_SAVE, self.nop)
-        make_action("act_file_saveas", "Save _As", "Save session", gtk.STOCK_SAVE_AS, self.nop)
+        make_action("act_file_open", "_Open", "Restore a session", gtk.STOCK_OPEN, self.on_file_open)
+        make_action("act_file_save", "_Save", "Save session", gtk.STOCK_SAVE, self.on_file_save)
+        make_action("act_file_saveas", "Save _As", "Save session", gtk.STOCK_SAVE_AS, self.on_file_saveas, "<Control><Shift>s")
+        make_action("act_file_close", "_Close", "Close session", gtk.STOCK_CLOSE, self.on_file_close)
         make_action("act_quit", "_Quit", "Quit application", gtk.STOCK_QUIT, self.on_close_main)
-        make_action("act_edit_undo", "Undo", "Undo action", gtk.STOCK_UNDO, self.nop)
-        make_action("act_edit_redo", "Redo", "Redo action", gtk.STOCK_REDO, self.nop)
+        make_action("act_edit_undo", "Undo", "Undo action", gtk.STOCK_UNDO, self.nop, "Undo")
+        make_action("act_edit_redo", "Redo", "Redo action", gtk.STOCK_REDO, self.nop, "Redo")
         make_action("act_edit_cut", "C_ut", "Cut", gtk.STOCK_CUT, self.nop)
         make_action("act_edit_copy", "_Copy", "Copy", gtk.STOCK_COPY, self.nop)
         make_action("act_edit_paste", "_Paste", "Paste", gtk.STOCK_PASTE, self.nop)
         make_action("act_preferences", "Pr_eferences", "Change preferences", gtk.STOCK_PREFERENCES, self.nop)
         make_action("act_help", "_Contents", "Help contents", gtk.STOCK_HELP, self.nop)
-        make_action("act_about", "_About", "About application", gtk.STOCK_ABOUT, self.nop)
+        make_action("act_about", "_About", "About application", gtk.STOCK_ABOUT, self.on_about)
         return
 
     def on_accel (self, *args):
@@ -402,11 +418,49 @@ Reverse operation may be a lambda that yields an action+arguments tuple.
 
     def nop (self, w, *args):
         print("nop")
-        return
+        return True
 
     def on_file_open (self, w, *args):
         print("load")
-        return
+        return True
+
+    def on_file_open (self, w, *args):
+        return True
+
+    def on_file_save (self, w, *args):
+        return True
+
+    def on_file_saveas (self, w, *args):
+        return True
+
+    def on_file_close (self, w, *args):
+        return True
+
+    def on_edit_undo (self, w, *args):
+        return True
+
+    def on_edit_redo (self, w, *args):
+        return True
+
+    def on_edit_cut (self, w, *args):
+        return True
+
+    def on_edit_copy (self, w, *args):
+        return True
+
+    def on_edit_paste (self, w, *args):
+        return True
+
+    def on_preferences (self, w, *args):
+        return True
+
+    def on_help_contents (self, w, *args):
+        return True
+
+    def on_about (self, w, *args):
+        self.aboutdlg.run()
+        self.aboutdlg.hide()
+        return True
 
     def on_close_main (self, w, *args):
         # TODO: confirm save.
