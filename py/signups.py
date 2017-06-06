@@ -207,17 +207,17 @@ class MainPaneling (BasePaneling):
 
 class SignupsMainW (gtk.Window):
     """Main window for signups."""
-    def __init__ (self, subtitle=None):
+    def __init__ (self, subtitle=None, menubar=None):
         gtk.Window.__init__(self)
-        self.build_ui(self, subtitle=subtitle)
+        self.build_ui(self, subtitle=subtitle, menubar=menubar)
 
-    def build_ui (self, ui, subtitle=None):
+    def build_ui (self, ui, subtitle=None, menubar=None):
         ui.set_size_request(640, 480)
         if subtitle is not None:
             self.set_subtitle(subtitle)
         ui.layout = gtk.VBox()
         ui.add(ui.layout)
-        self.menubar = gtk.MenuBar()
+        self.menubar = menubar or gtk.MenuBar()
         self.central = MainPaneling()
         self.statusbar = gtk.Statusbar()
         ui.layout.pack_start(self.menubar, False, True, 0)
@@ -247,11 +247,15 @@ Connects UI elements to actions (no store-modifying within widget instances).
         if store is None:
             store = SignupsStore()
         self.store = store
+        self.accel_group = gtk.AccelGroup()
+        self.action_group = gtk.ActionGroup("global")
         self.build_ops()
         self.build_ui()
+        self.mainw.add_accel_group(self.accel_group)
 
     def build_ui (self):
-        self.mainw = SignupsMainW()
+        self.menubar = self.build_main_menubar()
+        self.mainw = SignupsMainW(menubar=self.menubar)
         self.mainw.connect("delete-event", self.on_close_main)
 
     def make_main_window (self, subtitle=None):
@@ -264,36 +268,149 @@ Connects UI elements to actions (no store-modifying within widget instances).
         mainw.set_title(full_title)
         mainw.set_size_request(640, 480)
 
-    def build_main_menubar (self):
-        MENUDESC = """<?xml version="1.0"?>
-<ui>
-  <menubar>
-    <menu name="_File" action="act_FileMenu">
-      <menuitem name="_New" action="act_file_new"/>
-      <menuitem name="_Open" action="act_file_open"/>
-      <menuitem name="_Save" action="act_file_save"/>
-      <menuitem name="Save _As" action="act_file_saveas"/>
-      <separator/>
-      <menuitem name="_Quit" action="act_quit"/>
-    </menu>
-    <menu name="_Help" action="act_HelpMenu">
-      <menuitem name="_Contents" action="act_help_contents"/>
-      <menuitem name="_About" action="act_help_about"/>
-    </menu>
-  </menubar>
-</ui>
+    def make_menu (self, menudesc, variant=None):
+        """
+menudesc is list of 3-tuples = (label, action, accelerator)
+submenu when action is menudesc (i.e. list of 3-tuples)
 """
+        if variant is None:
+            variant = gtk.Menu
+        menu = variant()
+        for desciter in menudesc:
+            # desciter <- None   =>  Menu Separator
+            # desciter <- gtk.Action()  =>  GtkAction proxy
+            # desciter <- (lbl, cb, hotkey=None)  =>  direct menu item
+            # desciter <- (lbl, [submenu]) => submenu
+            menuitem = None
+            if desciter is None:
+                menuitem = gtk.SeparatorMenuItem()
+            else:
+                menuitem = None
+                try:
+                    desciter.connect_proxy
+                    #menuitem = gtk.MenuItem(use_underline=True)
+                    menuitem = gtk.ImageMenuItem()
+                    desciter.connect_proxy(menuitem)
+                except AttributeError:
+                    pass
+                if menuitem is None:
+                    lbl = action = accel = None
+                    try:
+                        lbl = desciter[0]
+                        action = desciter[1]
+                        accel = desciter[2]
+                    except IndexError:
+                        pass
+                    menuitem = gtk.MenuItem(lbl, use_underline=True)
+                    if isinstance(action, list):
+                        submenu = self.make_menu(action)
+                        menuitem.set_submenu(submenu)
+                    elif callable(action):
+                        menuitem.connect("activate", action)
+                    if accel:
+                        keyval, keymod = None, None
+                        if isinstance(accel, tuple):
+                            keyval, keymod = accel
+                        elif accel:
+                            accel = gtk.accelerator_parse(accel)
+                            if keyval is not None:
+                                menuitem.add_accelerator("activate", self.accel_group, keyval, keymod, gtk.ACCEL_VISIBLE)
+            if menuitem:
+                menu.append(menuitem)
+        return menu
+
+    def make_menubar (self, menubardesc):
+        menubar = self.make_menu(menubardesc, variant=gtk.MenuBar)
         return menubar
+
+    def build_main_menubar (self):
+        # menuitem <- ( stock_id, gtkAction )
+        # menuitem <- ( stock_id, callback, accelerator )
+        # menuitem <- ( menu_label, gtkAction )
+        # menuitem <- ( menu_label, callback, accelerator )
+        # menuitem <- ( menu_label, [ submenu_description ] )
+        MENUDESC = [
+          ('_File', [
+            self.act_file_new,
+            self.act_file_open,
+            self.act_file_save,
+            self.act_file_saveas,
+            None,
+            self.act_quit,
+            ]),
+          ('_Edit', [
+            self.act_edit_undo,
+            self.act_edit_redo,
+            None,
+            self.act_edit_cut,
+            self.act_edit_copy,
+            self.act_edit_paste,
+            None,
+            self.act_preferences,
+            ]),
+          ('_Help', [
+            self.act_help,
+            None,
+            self.act_about,
+            ]),
+          ]
+        return self.make_menubar(MENUDESC)
 
     def build_ops (self):
         """To support Undo, all actions affecting data should have a forward and reverse operation.
 Operations without a reversible counterpart destroy Undo history.
 Reverse operation may be a lambda that yields an action+arguments tuple.
 """
-        pass
+        def make_action (name, label, hint, stockid, cb, hotkey=None):
+            act = gtk.Action(name, label, hint, stockid)
+            act.connect("activate", cb)
+            act.set_accel_group(self.accel_group)
+#            act.set_accel_path("<window>/Main")
+#            keyval, keymod = None, None
+#            if isinstance(hotkey, tuple):
+#                keyval, keymod = hotkey
+#            elif hotkey:
+#                keyval, keymod = gtk.accelerator_parse(hotkey)
+#            elif stockid:
+#                stockinfo = gtk.stock_lookup(stockid)
+#                if stockinfo:
+#                    sid, slbl, smod, skval, std = stockinfo
+#                    keyval, keymod = skval, smod
+#                    print("Using stock accel %r,%r" % (keyval, keymod))
+##            if keyval:
+##                self.accel_group.connect_group(keyval, keymod, gtk.ACCEL_VISIBLE, self.on_accel)
+            self.action_group.add_action_with_accel(act, hotkey)
+            act.connect_accelerator()
+            self.__dict__.__setitem__(name, act)
+        make_action("act_file_new", "_New", "Create new session", gtk.STOCK_NEW, self.nop, "<Control>n")
+        make_action("act_file_open", "_Open", "Open saved session", gtk.STOCK_OPEN, self.on_file_open)
+        make_action("act_file_save", "_Save", "Save session", gtk.STOCK_SAVE, self.nop)
+        make_action("act_file_saveas", "Save _As", "Save session", gtk.STOCK_SAVE_AS, self.nop)
+        make_action("act_quit", "_Quit", "Quit application", gtk.STOCK_QUIT, self.on_close_main)
+        make_action("act_edit_undo", "Undo", "Undo action", gtk.STOCK_UNDO, self.nop)
+        make_action("act_edit_redo", "Redo", "Redo action", gtk.STOCK_REDO, self.nop)
+        make_action("act_edit_cut", "C_ut", "Cut", gtk.STOCK_CUT, self.nop)
+        make_action("act_edit_copy", "_Copy", "Copy", gtk.STOCK_COPY, self.nop)
+        make_action("act_edit_paste", "_Paste", "Paste", gtk.STOCK_PASTE, self.nop)
+        make_action("act_preferences", "Pr_eferences", "Change preferences", gtk.STOCK_PREFERENCES, self.nop)
+        make_action("act_help", "_Contents", "Help contents", gtk.STOCK_HELP, self.nop)
+        make_action("act_about", "_About", "About application", gtk.STOCK_ABOUT, self.nop)
+        return
+
+    def on_accel (self, *args):
+        print("on_accel: %r" % (args,))
+
+    def nop (self, w, *args):
+        print("nop")
+        return
+
+    def on_file_open (self, w, *args):
+        print("load")
+        return
 
     def on_close_main (self, w, *args):
         # TODO: confirm save.
+        print("quit")
         gtk.main_quit()
 
 
