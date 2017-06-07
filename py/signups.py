@@ -123,20 +123,12 @@ class GamelistStore (gtk.ListStore):
         for line in fileobj.readlines():
             if '=' in line:
                 short_name, long_name = line.strip().split('=', 1)
-                #fulldesc = "{}={}".format(short_name, long_name)
-                #self.append((short_name, long_name, fulldesc))
                 self.append((short_name, long_name, None))
             else:
                 pass
 
     def on_row_inserted (self, mdl, path, treeiter, *args):
         pass
-#        entry = mdl[treeiter]
-#        full_desc = "{}={}".format(entry[0], entry[1])
-#        #entry[2] = full_desc
-#        mdl.set_value(treeiter, 2, full_desc)
-#        print("update full_desc: %r,%r,%r" % (mdl[treeiter][0], mdl[treeiter][1], mdl[treeiter][1]))
-#        return True
 
     def on_row_changed (self, mdl, path, treeiter, *args):
         entry = mdl[treeiter]
@@ -236,6 +228,7 @@ do_add_games([ (short_code, game_title, full_desc), ...])
 Returns: Undo action
 """
         undoable = []
+        extant = [ row[0] for row in self.gamelist ]
         for gameidx in range(len(gameinfolist)):
             gameinfo = gameinfolist[gameidx]
             short_code = game_title = full_desc = None
@@ -245,6 +238,9 @@ Returns: Undo action
                 full_desc = gameinfo[2]
             except IndexError:
                 pass
+            if short_code in extant:
+                # Avoid double-add.
+                continue
             if positions:
                 pos = positions[gameidx]
                 self.gamelist.insert(pos, (short_code, game_title, full_desc))
@@ -309,6 +305,8 @@ class GamelistPaneling (BasePaneling):
         self.choose_model = None
 
         self.presetview = gtk.TreeView(self.preset_model)
+        presetsel = self.presetview.get_selection()
+        presetsel.set_mode(gtk.SELECTION_MULTIPLE)
         self.txtrender = gtk.CellRendererText()
         col0 = gtk.TreeViewColumn('Presets', self.txtrender, text=2)
         self.presetview.append_column(col0)
@@ -334,7 +332,7 @@ class GamelistPaneling (BasePaneling):
         self.chooseview.append_column(col0)
 
         manualrow = gtk.HBox()
-        self.lbl_manual = gtk.Label("Game:")
+        self.lbl_manual = gtk.Label("Custom Game:")
         self.entry_manual = gtk.Entry()
         self.btn_manual = gtk.Button("_Manual Add")
         manualrow.pack_start(self.lbl_manual, False, False, 0)
@@ -762,8 +760,6 @@ Reverse operation may be a lambda that yields an action+arguments tuple.
         if not sels:
             return True
         mdl, rows = sels
-        #for row in rows:
-        #    self.store.gamelist.append(self.store.presetlist[row])
         gameinfolist = [ self.store.presetlist[row] for row in rows ]
         self.history.advance(self.store.do_add_games, gameinfolist)
         return True
