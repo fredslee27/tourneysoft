@@ -13,6 +13,7 @@ APP_DESCRIPTION="GUI for handling tournament signups."""
 
 
 import gtk  # Gtk 2.x
+import gobject
 # Gtk2: because gtk2 likely to be ported to other platforms.
 
 gtk.check_version(2, 20, 0)
@@ -72,7 +73,7 @@ def string_as_file (s):
         return io.StringIO(unicode(s))
 
 
-class Gamelist (list):
+class Gamelist0 (list):
     """List of games available for signup.
 Elements are 2-tuples of: (short_name, long_name)
 """
@@ -108,6 +109,46 @@ If fileobj is not specified, use builtin gamelist.
             else:
                 pass
 
+class GamelistStore (gtk.ListStore):
+    """List of games: (short_code, game_title, full_desc)"""
+    def __init__ (self, *args, **kwargs):
+        gtk.ListStore.__init__(self, gobject.TYPE_STRING, gobject.TYPE_STRING, gobject.TYPE_STRING)
+        self.connect("row-inserted", self.on_row_inserted)
+        self.changing = self.connect("row-changed", self.on_row_changed)
+        self.connect("row-deleted", self.on_row_deleted)
+
+    def import_file (self, fileobj):
+        if fileobj is None:
+            fileobj = string_as_file(BUILTIN_GAMELIST)
+        for line in fileobj.readlines():
+            if '=' in line:
+                short_name, long_name = line.strip().split('=', 1)
+                #fulldesc = "{}={}".format(short_name, long_name)
+                #self.append((short_name, long_name, fulldesc))
+                self.append((short_name, long_name, None))
+            else:
+                pass
+
+    def on_row_inserted (self, mdl, path, treeiter, *args):
+        pass
+#        entry = mdl[treeiter]
+#        full_desc = "{}={}".format(entry[0], entry[1])
+#        #entry[2] = full_desc
+#        mdl.set_value(treeiter, 2, full_desc)
+#        print("update full_desc: %r,%r,%r" % (mdl[treeiter][0], mdl[treeiter][1], mdl[treeiter][1]))
+#        return True
+
+    def on_row_changed (self, mdl, path, treeiter, *args):
+        entry = mdl[treeiter]
+        full_desc = "{}={}".format(entry[0], entry[1])
+        mdl.handler_block(self.changing)
+        mdl.set_value(treeiter, 2, full_desc)
+        mdl.handler_unblock(self.changing)
+        return True
+
+    def on_row_deleted (self, mdl, path, *args):
+        return True
+
 class Entrant (object):
     """Player and the games for which they registered."""
     def __init__ (self, name, gamelist=None):
@@ -119,6 +160,22 @@ class Entrant (object):
 class EntrantList (list):
     pass
 
+class EntrantStore (gtk.ListStore):
+    """List of entrants, for a game: (index_into_EntrantStore, name)
+Special case game==None: (None, name) 
+Typical case game!=None: (index_into_EntrantStore, None)
+"""
+    def __init__ (self):
+        gtk.ListStore.__init__(self, gobject.TYPE_INT, gobject.TYPE_STRING)
+
+#class EntrantStore (gtk.ListStore):
+#    """data model for signups sheet: (name, checkbox, ...)"""
+#    def __init__ (self):
+#        gtk.ListStore.__init__(self, gobject.TYPE_STRING)
+#
+#    def resize (self, num_games):
+#        pass
+
 class SignupsStore (object):
     """Checkpointed data store:
 Gamelist
@@ -127,42 +184,99 @@ Provisional links to exported tournaments (e.g. Challonge)
 """
     def __init__ (self):
         self.subtitle = None  # Session description, e.g. tournament name
-        self.gamelist = Gamelist()
-        self.entrants = EntrantList()
+        self.presetlist = GamelistStore()
+        self.presetlist.import_file(None)
+        self.gamelist = GamelistStore()
+        self.entrantlist = EntrantStore()
 
-    def do_add_entrant (self, name__entrant, games=None, position=None):
+    def do_add_entrant (self, name, game=None, position=None):
         """add entrant to list, returns an Undo action.
-  do_add_entrant(name, gameslist)
-  do_add_entrant(Entrant(...))
+  do_add_entrant(name, None) - global list
+  do_add_entrant(name, game) - add entrant to particular game
+
+Returns: Undo action
         """
-        if games is None:
-            entrant = name__entrant
+        targetlist = None
+        if not game:
+            # global list
+            targetlist = self.entrantlist
         else:
-            entrant = Entrant(name__entrant, games)
-        #self.entrants.append(entrant)
-        if (position is not None) and (pos >= 0):
-            self.entrants.insert(position, entrant)
+            # particular game.
+            targetlist = None
+        if targetlist is None:
+            return None
+        if (position is not None) and (position >= 0):
+            targetlist.insert(position, (0, name))
         else:
-            self.entrants.append(entrant)
-        undo = ("do_remove_player", entrant.name)
+            targetlist.append((0, name))
+        undo = (self.do_remove_entrant, (name, game))
         return undo
 
-    def do_remove_entrant (self, name__entrant):
+    def do_remove_entrant (self, name, game=None):
         """remove entrant from list, returns an Undo action (doubles as Redo).
+  do_remove_entrant(name, game) - remove entrant from particular game.
+
+Returns: Undo action
 """
-        try:
-            ref = self.entrants[name]
-        except KeyError:
-            print("Data inconsistency: attempt to remove name which was not found: {}".format(name))
-            # destroy undo history?
-            return
-        pos = self.entrants.find(ref)
-        del self.entrants[pos]
-        undo = ("do_add_player", ref.name, ref.gamelist, pos)
+        targetlist = None
+        if not targetlist:
+            # Do not remove from global list; only modify in place.
+            return None
+        culls = [ gtk.TreeRowReference(targetlist, it) for it in targetlist if it.name == name ]
+        if culls:
+            targetlist.remove(cull[0])
+            undo = (self.do_add_entrant, (name, game))
+            return undo
+        return None
+
+    def do_add_games (self, gameinfolist, positions=None):
+        """Add games to gamelist:
+do_add_games([ (short_code, game_title, full_desc), ...])
+
+Returns: Undo action
+"""
+        undoable = []
+        for gameidx in range(len(gameinfolist)):
+            gameinfo = gameinfolist[gameidx]
+            short_code = game_title = full_desc = None
+            try:
+                short_code = gameinfo[0]
+                game_title = gameinfo[1]
+                full_desc = gameinfo[2]
+            except IndexError:
+                pass
+            if positions:
+                pos = positions[gameidx]
+                self.gamelist.insert(pos, (short_code, game_title, full_desc))
+            else:
+                self.gamelist.append((short_code, game_title, full_desc))
+            undoable.append(short_code)
+        undo = (self.do_remove_games, (undoable,))
         return undo
 
+    def do_remove_games (self, short_code_list):
+        """Remove games from gamelist:
+do_remove_games ([ short_code, ...])
 
-
+Returns: Undo action
+"""
+        undoable = [] # Row data.
+        undopos = []  # Original positions per row data.
+        culls = []
+        for gameidx in range(len(self.gamelist)):
+            rowiter = self.gamelist.get_iter(gameidx)
+            rowdata = self.gamelist.get(rowiter, 0, 1, 2)
+            if rowdata[0] in short_code_list:
+                treepath = self.gamelist.get_path(rowiter)
+                treeref = gtk.TreeRowReference(self.gamelist, treepath)
+                culls.append(treeref)
+                undoable.append(rowdata)
+                undopos.append(gameidx)
+        for culliter in culls:
+            culliter = self.gamelist.get_iter(culliter.get_path())
+            self.gamelist.remove(culliter)
+        undo = (self.do_add_games, (undoable,undopos))
+        return undo
 
 
 
@@ -191,28 +305,75 @@ build_ui() to populate UI.
 class GamelistPaneling (BasePaneling):
     """Window panel (tab?) for modifying gamelist."""
     def build_ui (self, ui):
-        pass
+        self.preset_model = None
+        self.choose_model = None
+
+        self.presetview = gtk.TreeView(self.preset_model)
+        self.txtrender = gtk.CellRendererText()
+        col0 = gtk.TreeViewColumn('Presets', self.txtrender, text=2)
+        self.presetview.append_column(col0)
+        ui.pack_start(self.presetview, True, True, 0)
+
+        transfercol = gtk.VBox()
+        spacer0 = gtk.Label()
+        spacer1 = gtk.Label()
+        spacer2 = gtk.Label()
+        self.btn_add = gtk.Button("_Add")
+        self.btn_del = gtk.Button("_Del")
+        transfercol.pack_start(spacer0, True, True, 0)
+        transfercol.pack_start(self.btn_add, False, False, 0)
+        transfercol.pack_start(spacer1, False, True, 0)
+        transfercol.pack_start(self.btn_del, False, False, 0)
+        transfercol.pack_start(spacer2, True, True, 0)
+        ui.pack_start(transfercol, False, True, 0)
+
+        choosecol = gtk.VBox()
+        self.chooseview = gtk.TreeView(self.choose_model)
+        self.txtrender2 = gtk.CellRendererText()
+        col0 = gtk.TreeViewColumn('Chosen', self.txtrender2, text=2)
+        self.chooseview.append_column(col0)
+
+        manualrow = gtk.HBox()
+        self.lbl_manual = gtk.Label("Game:")
+        self.entry_manual = gtk.Entry()
+        self.btn_manual = gtk.Button("_Manual Add")
+        manualrow.pack_start(self.lbl_manual, False, False, 0)
+        manualrow.pack_start(self.entry_manual, True, True, 0)
+        manualrow.pack_start(self.btn_manual, False, False, 0)
+        choosecol.pack_start(self.chooseview, True, True, 0)
+        choosecol.pack_start(manualrow, False, True, 0)
+        ui.pack_start(choosecol, True, True, 0)
+
+        return
+
+    def set_preset_model (self, mdl):
+        self.preset_model = mdl
+        self.presetview.set_model(self.preset_model)
+
+    def set_choose_model (self, mdl):
+        self.choose_model = mdl
+        self.chooseview.set_model(self.choose_model)
 
 class EntrantlistPaneling (BasePaneling):
     """Window panel (tab?) for modifying entrants list: Player name and games desired."""
     def build_ui (self, ui):
-        pass
+        return
 
 class BracketPaneling (BasePaneling):
     """Panel/tab for handling tournament exports (setting up brackets)."""
     def build_ui (self, ui):
-        pass
+        return
 
 class MainPaneling (BasePaneling):
     """Main window, signups."""
     SUBSTRATE = gtk.Notebook
     def build_ui (self, ui):
-        ui.gamelist = GamelistPaneling()
-        ui.entrantlist = EntrantlistPaneling()
-        ui.bracketing = BracketPaneling()
+        self.gamelist = GamelistPaneling()
+        self.entrantlist = EntrantlistPaneling()
+        self.bracketing = BracketPaneling()
         ui.set_tab_pos(gtk.POS_LEFT)
-        ui.append_page(ui.gamelist.ui, gtk.Label("1 Gamelist"))
-        ui.append_page(ui.entrantlist.ui, gtk.Label("2 Signups"))
+        ui.append_page(self.gamelist.ui, gtk.Label("1 Gamelist"))
+        ui.append_page(self.entrantlist.ui, gtk.Label("2 Signups"))
 
 
 class SignupsMainW (gtk.Window):
@@ -283,6 +444,15 @@ Connects UI elements to actions (no store-modifying within widget instances).
         self.menubar = self.build_main_menubar()
         self.mainw = SignupsMainW(menubar=self.menubar)
         self.mainw.connect("delete-event", self.on_close_main)
+        self.mainw.central.gamelist.set_preset_model(self.store.presetlist)
+        self.mainw.central.gamelist.set_choose_model(self.store.gamelist)
+
+        uigamelist = self.mainw.central.gamelist
+        uigamelist.presetview.connect("row-activated", self.on_presetview_row_activated)
+        self.act_gamelist_pick.connect_proxy(uigamelist.btn_add)
+        self.act_gamelist_del.connect_proxy(uigamelist.btn_del)
+        self.act_gamelist_manual.connect_proxy(uigamelist.btn_manual)
+
         self.aboutdlg = SignupsAboutW()
 
     def make_main_window (self, subtitle=None):
@@ -411,6 +581,10 @@ Reverse operation may be a lambda that yields an action+arguments tuple.
         make_action("act_preferences", "Pr_eferences", "Change preferences", gtk.STOCK_PREFERENCES, self.nop)
         make_action("act_help", "_Contents", "Help contents", gtk.STOCK_HELP, self.nop)
         make_action("act_about", "_About", "About application", gtk.STOCK_ABOUT, self.on_about)
+
+        make_action("act_gamelist_pick", "_Add", "Add preset to chosen", None, self.on_gamelist_pick)
+        make_action("act_gamelist_del", "_Del", "Delete chosen entry", None, self.on_gamelist_del)
+        make_action("act_gamelist_manual", "_Manual Add", "Manually add chosen game", None, self.on_gamelist_manual)
         return
 
     def on_accel (self, *args):
@@ -462,6 +636,58 @@ Reverse operation may be a lambda that yields an action+arguments tuple.
         self.aboutdlg.hide()
         return True
 
+    def on_presetview_row_activated (self, w, *args):
+        presetview = w
+        treesel = presetview.get_selection()
+        sels = treesel.get_selected_rows()
+        if not sels:
+            return True
+        mdl, rows = sels
+        for row in rows:
+            self.store.gamelist.append(self.store.presetlist[row])
+        return True
+
+    def on_gamelist_pick (self, w, *args):
+        uigamelist = self.mainw.central.gamelist
+        presetview = uigamelist.presetview
+        treesel = presetview.get_selection()
+        sels = treesel.get_selected_rows()
+        if not sels:
+            return True
+        mdl, rows = sels
+        for row in rows:
+            self.store.gamelist.append(self.store.presetlist[row])
+        return True
+
+    def on_gamelist_del (self, w, *args):
+        uigamelist = self.mainw.central.gamelist
+        chooseview = uigamelist.chooseview
+        treesel = chooseview.get_selection()
+        sels = treesel.get_selected_rows()
+        if not sels:
+            return True
+        mdl, rows = sels
+        culls = [ gtk.TreeRowReference(mdl, row) for row in rows ]
+        for cullref in culls:
+            treeiter = mdl.get_iter(cullref.get_path())
+            mdl.remove(treeiter)
+        return True
+
+    def on_gamelist_manual (self, w, *args):
+        uigamelist = self.mainw.central.gamelist
+        manual_entry = uigamelist.entry_manual
+        fulldesc = manual_entry.get_text()
+        if fulldesc:
+            if '=' in fulldesc:
+                short_name, game_title = fulldesc.split('=', 1)
+                self.store.gamelist.append((short_name, game_title, None))
+            else:
+                self.store.gamelist.append((fulldesc, fulldesc, None))
+            manual_entry.set_text("")
+            return True
+        else:
+            return False
+
     def on_close_main (self, w, *args):
         # TODO: confirm save.
         print("quit")
@@ -469,7 +695,8 @@ Reverse operation may be a lambda that yields an action+arguments tuple.
 
 
 if __name__ == "__main__":
-    ui = SignupsUI()
+    store = SignupsStore()
+    ui = SignupsUI(store)
     ui.mainw.show_all()
     gtk.main()
 
