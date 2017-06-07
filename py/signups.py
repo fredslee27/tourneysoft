@@ -422,6 +422,99 @@ class SignupsAboutW (gtk.AboutDialog):
         self.set_comments(APP_DESCRIPTION)
 
 
+class ActionHistory (gtk.ListStore):
+    """Action history, utilized for undo history.
+'cursor' point to current history node row.    
+Each row correlates to a specific state of data, transitions record the changes to the state.
+For each row, the 'undo' column restores state from future node;
+the 'redo' column restores state to future node.
+"""
+    def __init__ (self, undo_action=None, redo_action=None):
+        # Tuple of (undo_func, undo_args, redo_func, redo_args)
+        gtk.ListStore.__init__(self, gobject.TYPE_PYOBJECT, gobject.TYPE_PYOBJECT, gobject.TYPE_PYOBJECT, gobject.TYPE_PYOBJECT)
+        self.count = 0
+        self.cursor = None  # Current point in action history.
+        self.undo_action = undo_action
+        self.redo_action = redo_action
+        if self.undo_action:
+            self.undo_action.set_sensitive(False)
+        if self.redo_action:
+            self.redo_action.set_sensitive(False)
+
+    def boh (self):
+        """Predicate: at Beginning of History (disable Undo)"""
+        return (self.cursor is None) or (self.count <= 0)
+
+    def eoh (self):
+        """Predicate: at End of History (disable Redo)"""
+        return self.cursor >= self.count
+
+    def backtrack (self):
+        """Step one backwards in history, as Undo."""
+        if self.cursor >= 0:
+            track = self.cursor - 1
+            node = self[track]
+            func, args = node[0], node[1]
+            redo = func(*args)
+            self.cursor -= 1
+            if self.redo_action:
+                self.redo_action.set_sensitive(True)
+        if self.cursor <= 0:
+            if self.undo_action:
+                self.undo_action.set_sensitive(False)
+        return self.cursor >= 0
+
+    def foretrack (self):
+        """Step one forward in history, as Redo."""
+        if self.cursor < self.count:
+            track = self.cursor
+            node = self[track]
+            func, args = node[2], node[3]
+            undo = func(*args)
+            self.cursor += 1
+            if self.undo_action:
+                self.undo_action.set_sensitive(True)
+        if self.cursor >= self.count:
+            if self.redo_action:
+                self.redo_action.set_sensitive(False)
+        return self.cursor < self.count
+
+    def redcut (self):
+        """Cut history at cursor, as overwriting Redo stack."""
+        if self.cursor is not None:
+            marks = range(self.cursor, len(self))
+            culls = [ gtk.TreeRowRefernce(rowiter) for rowiter in marks ]
+            for cull in culls:
+                self.remove(cull.get_iter())
+            self.count -= len(culls)
+            self.cursor = self.count
+        if self.redo_action:
+            self.redo_action.set_sensitive(False)
+        return
+
+    def commit (self, transaction, undo):
+        """Add one action step into history.
+  transaction - current call to step forward in history (new action).
+  undo - future call to make on an undo; if None, cuts Undo stack (action cannot be undone).
+"""
+        if undo is None:
+            self.clear()
+            enditer = self.append((None, None, transaction[0], transaction[1]))
+        else:
+            enditer = self.append((undo[0], undo[1], transaction[0], transaction[1]))
+        self.count += 1
+        self.cursor = self.count
+        if self.undo_action:
+            self.undo_action.set_sensitive(True)
+        if self.redo_action:
+            self.redo_action.set_sensitive(False)
+
+    def advance (self, do, *args):
+        """Typical case of new user action, erasing Redo stack."""
+        self.redcut()
+        undo = do(*args)
+        self.commit((do, args), (undo[0], undo[1]))
+
 class SignupsUI (object):
     """UI state information and event handler.
 Collects the various windows together if there are multiple.
@@ -439,6 +532,9 @@ Connects UI elements to actions (no store-modifying within widget instances).
         self.build_ops()
         self.build_ui()
         self.mainw.add_accel_group(self.accel_group)
+        self.undostack = []   # The Undo stack
+        self.redostack = []   # The Redo stack
+        self.history = ActionHistory(self.act_edit_undo, self.act_edit_redo)  # Undo/Redo stack.
 
     def build_ui (self):
         self.menubar = self.build_main_menubar()
@@ -516,6 +612,27 @@ submenu when action is menudesc (i.e. list of 3-tuples)
                 menu.append(menuitem)
         return menu
 
+    def push_undo (self, undoinfo, preserve_redo=False):
+        """Store new undo node because of a new action.  Destroys redo stack."""
+        if not preserve_redo:
+            self.redostack = []
+        self.undostack.append(undoinfo)
+    def pop_undo (self):
+        """Help execute an undo action."""
+        undoinfo = None
+        if self.undostack:
+            undoinfo = self.undostack.pop()
+        return undoinfo
+    def push_redo (self, redoinfo):
+        """Store a new redo action after carrying out an undo."""
+        self.redostack.append(redoinfo)
+    def pop_redo (self):
+        """Help execute a redo operation."""
+        redoinfo = None
+        if self.redostack:
+            redoinfo = self.redostack.pop()
+        return redoinfo
+
     def make_menubar (self, menubardesc):
         menubar = self.make_menu(menubardesc, variant=gtk.MenuBar)
         return menubar
@@ -573,8 +690,8 @@ Reverse operation may be a lambda that yields an action+arguments tuple.
         make_action("act_file_saveas", "Save _As", "Save session", gtk.STOCK_SAVE_AS, self.on_file_saveas, "<Control><Shift>s")
         make_action("act_file_close", "_Close", "Close session", gtk.STOCK_CLOSE, self.on_file_close)
         make_action("act_quit", "_Quit", "Quit application", gtk.STOCK_QUIT, self.on_close_main)
-        make_action("act_edit_undo", "Undo", "Undo action", gtk.STOCK_UNDO, self.nop, "Undo")
-        make_action("act_edit_redo", "Redo", "Redo action", gtk.STOCK_REDO, self.nop, "Redo")
+        make_action("act_edit_undo", "Undo", "Undo action", gtk.STOCK_UNDO, self.on_edit_undo, "Undo")
+        make_action("act_edit_redo", "Redo", "Redo action", gtk.STOCK_REDO, self.on_edit_redo, "Redo")
         make_action("act_edit_cut", "C_ut", "Cut", gtk.STOCK_CUT, self.nop)
         make_action("act_edit_copy", "_Copy", "Copy", gtk.STOCK_COPY, self.nop)
         make_action("act_edit_paste", "_Paste", "Paste", gtk.STOCK_PASTE, self.nop)
@@ -611,9 +728,11 @@ Reverse operation may be a lambda that yields an action+arguments tuple.
         return True
 
     def on_edit_undo (self, w, *args):
+        self.history.backtrack()
         return True
 
     def on_edit_redo (self, w, *args):
+        self.history.foretrack()
         return True
 
     def on_edit_cut (self, w, *args):
@@ -643,8 +762,10 @@ Reverse operation may be a lambda that yields an action+arguments tuple.
         if not sels:
             return True
         mdl, rows = sels
-        for row in rows:
-            self.store.gamelist.append(self.store.presetlist[row])
+        #for row in rows:
+        #    self.store.gamelist.append(self.store.presetlist[row])
+        gameinfolist = [ self.store.presetlist[row] for row in rows ]
+        self.history.advance(self.store.do_add_games, gameinfolist)
         return True
 
     def on_gamelist_pick (self, w, *args):
@@ -655,8 +776,10 @@ Reverse operation may be a lambda that yields an action+arguments tuple.
         if not sels:
             return True
         mdl, rows = sels
-        for row in rows:
-            self.store.gamelist.append(self.store.presetlist[row])
+        #for row in rows:
+        #    self.store.gamelist.append(self.store.presetlist[row])
+        gameinfolist = [ self.store.presetlist[row] for row in rows ]
+        self.history.advance(self.store.do_add_games, gameinfolist)
         return True
 
     def on_gamelist_del (self, w, *args):
@@ -667,10 +790,12 @@ Reverse operation may be a lambda that yields an action+arguments tuple.
         if not sels:
             return True
         mdl, rows = sels
-        culls = [ gtk.TreeRowReference(mdl, row) for row in rows ]
-        for cullref in culls:
-            treeiter = mdl.get_iter(cullref.get_path())
-            mdl.remove(treeiter)
+        #culls = [ gtk.TreeRowReference(mdl, row) for row in rows ]
+        #for cullref in culls:
+        #    treeiter = mdl.get_iter(cullref.get_path())
+        #    mdl.remove(treeiter)
+        culls = [ row[0] for row in rows ]
+        self.history.advance(self.store.do_remove_games, culls)
         return True
 
     def on_gamelist_manual (self, w, *args):
@@ -680,10 +805,11 @@ Reverse operation may be a lambda that yields an action+arguments tuple.
         if fulldesc:
             if '=' in fulldesc:
                 short_name, game_title = fulldesc.split('=', 1)
-                self.store.gamelist.append((short_name, game_title, None))
+                gameinfo = (short_name, game_title, None)
             else:
-                self.store.gamelist.append((fulldesc, fulldesc, None))
+                gameinfo = (short_name, game_title, None)
             manual_entry.set_text("")
+            self.history.advance(self.store.do_add_games, [gameinfo])
             return True
         else:
             return False
