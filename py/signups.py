@@ -313,9 +313,9 @@ class GamelistPaneling (BasePaneling):
         ui.pack_start(self.presetview, True, True, 0)
 
         transfercol = gtk.VBox()
-        spacer0 = gtk.Label()
+        spacer0 = gtk.HBox()
         spacer1 = gtk.Label()
-        spacer2 = gtk.Label()
+        spacer2 = gtk.HBox()
         self.btn_add = gtk.Button("_Add")
         self.btn_del = gtk.Button("_Del")
         transfercol.pack_start(spacer0, True, True, 0)
@@ -353,8 +353,112 @@ class GamelistPaneling (BasePaneling):
         self.chooseview.set_model(self.choose_model)
 
 class EntrantlistPaneling (BasePaneling):
-    """Window panel (tab?) for modifying entrants list: Player name and games desired."""
+    """Window panel (tab?) for modifying entrants list: Player name and games desired.
+    
+Expected layout:
+| # | Name or Handle      ( -> tab) | G1  | G2  | G3  | ...
+| # | {_                         _} | [X] | [X] | [X] |
+"""
+    SUBSTRATE = gtk.VBox
     def build_ui (self, ui):
+        self.dirty = True
+        self.titlebanner = gtk.Label("2 SIGNUPS")
+        self.signupsholder = gtk.HBox()
+        self.signupsgrid = None
+        self.btn_expand = gtk.Button("Add more lines")
+        self.gamelist_model = []
+        ui.pack_start(self.titlebanner, False, True, 0)
+        ui.pack_start(self.signupsholder, False, True, 0)
+        ui.pack_start(gtk.HBox(), True, True, 0)
+        ui.pack_start(self.btn_expand, False, False, 0)
+        self.nrows = 8
+        ui.connect("map", self.on_map)
+        return ui
+
+    def set_gamelist_model (self, mdl):
+        self.gamelist_model = mdl
+        self.gamelist_model.connect("row-inserted", self.on_gamelist_expanded)
+        self.gamelist_model.connect("row-deleted", self.on_gamelist_contracted)
+        self.gamelist_model.connect("row-changed", self.on_gamelist_changed)
+        self.rebuild()
+
+    def on_gamelist_expanded (self, mdl, path, treeiter, *args):
+        self.semi_rebuild()
+    def on_gamelist_contracted (self, mdl, path, *args):
+        self.semi_rebuild()
+    def on_gamelist_changed (self, mdl, path, treeiter, *args):
+        self.semi_rebuild()
+
+    def semi_rebuild (self):
+        if self.dirty and self.ui.is_drawable():
+            self.rebuild()
+
+    def on_map (self, w, *args):
+        if self.dirty:
+            self.rebuild()
+
+    def rebuild (self, ui=None):
+        print("Rebuilding sheet")
+        self.ncols = 2 + len(self.gamelist_model)
+        grid = gtk.Table(self.nrows, self.ncols, homogeneous=False)
+        # First row: labels
+        lbl_num = gtk.Label("#")
+        hdr_num = gtk.Alignment(xalign=0.5, yalign=1.0)
+        hdr_num.add(lbl_num)
+
+        #lbl_name = gtk.Label("Name or Handle")
+        lbl_name = gtk.Label("Name or Handle")
+        lbl_name.set_markup("<span font_size='large' font_weight='bold'>Name or Handle</span>")
+        hdr_name = gtk.Alignment(xalign=0.5, yalign=1.0)
+        hdr_name.add(lbl_name)
+
+        hdr_games = []
+        for gameinfo in self.gamelist_model:
+            short_code, game_title, _ = gameinfo
+            if game_title:
+                wrapped_title = '\n '.join(textwrap.wrap(game_title, 16))
+            else:
+                wrapped_title = ""
+            lbl = gtk.Label(wrapped_title)
+            #lbl.set_valign(Gtk.Align.END)
+            lbl.set_angle(60)
+            hdr = gtk.Alignment(yalign=1.0)
+            hdr.add(lbl)
+            hdr_games.append(hdr)
+        # Attach header elements to grid.
+        firstrow = [ hdr_num, hdr_name, ] + hdr_games
+        for colnum in range(len(firstrow)):
+            w = firstrow[colnum]
+            if colnum == 0:
+                grid.attach(w, colnum, colnum+1, 0, 1, xoptions=0, yoptions=gtk.FILL)
+            elif colnum == 1:
+                grid.attach(w, colnum, colnum+1, 0, 1, xoptions=gtk.EXPAND|gtk.FILL, yoptions=gtk.FILL)
+            elif colnum > 1:
+                # First, VRuler.
+                basecol = 2 + 2*(colnum-2)
+                grid.attach(gtk.VSeparator(), basecol, basecol+1, 0, self.nrows+1, xoptions=0, yoptions=gtk.FILL)
+                # Second, game title.
+                grid.attach(w, basecol+1, basecol+2, 0, 1, xoptions=0, yoptions=gtk.FILL)
+        # Signup rows.
+        for rownum in range(self.nrows):
+            lbl_num = gtk.Label(rownum+1)
+            grid.attach(lbl_num, 0, 1, rownum+1, rownum+2, xoptions=0)
+            entry_name = gtk.Entry()
+            grid.attach(entry_name, 1, 2, rownum+1, rownum+2, xoptions=gtk.FILL, xpadding=4, ypadding=4)
+            for chknum in range(len(hdr_games)):
+                short_code, game_title, _ = self.gamelist_model[chknum]
+                chk_game = gtk.CheckButton(short_code)
+                basecol = 2 + 2*chknum
+                grid.attach(chk_game, basecol+1, basecol+2, rownum+1, rownum+2, xoptions=0)
+        # Attach to paneling.
+        if not ui:
+            ui = self.ui
+        if self.signupsgrid:
+            self.signupsholder.remove(self.signupsgrid)
+            self.signupsgrid = None
+        self.signupsgrid = grid
+        self.signupsholder.pack_start(self.signupsgrid, True, True, 0)
+        self.signupsgrid.show_all()
         return
 
 class BracketPaneling (BasePaneling):
@@ -546,6 +650,9 @@ Connects UI elements to actions (no store-modifying within widget instances).
         self.act_gamelist_pick.connect_proxy(uigamelist.btn_add)
         self.act_gamelist_del.connect_proxy(uigamelist.btn_del)
         self.act_gamelist_manual.connect_proxy(uigamelist.btn_manual)
+
+        uisignups = self.mainw.central.entrantlist
+        uisignups.set_gamelist_model(self.store.gamelist)
 
         self.aboutdlg = SignupsAboutW()
 
