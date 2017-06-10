@@ -168,18 +168,42 @@ Typical case game!=None: (index_into_EntrantStore, None)
 #    def resize (self, num_games):
 #        pass
 
-class SignupsStore (object):
+class SignupsStore (gtk.ListStore):
     """Checkpointed data store:
-Gamelist
-Players and the games for which they register.
-Provisional links to exported tournaments (e.g. Challonge)
+ * Gamelist
+ * Players and the games for which they register.
+ * Provisional links to exported tournaments (e.g. Challonge)
+
+Signup sheet data (entrybools) is ListStore of ListStore:
+[0] -> list of bool
+[1] -> list of bool
+...
+
+[0][0] -> bool for first game for first entrant
+[1][0] -> bool for second game for first entrant
+[2][0] -> bool for third game for first entrant
+[0][1] -> bool for first game for second entrant
+[1][1] -> bool for second game for second entrant
+[2][1] -> bool for third game for second entrant
+...
 """
     def __init__ (self):
+        # main data is ListStore of ListStore;
+        # entrybools is ListStore of ListStore;
+        #  first index is game index into gamelist,
+        #  second index is row,
+        #  value is boolean of entrant at the row entering the game from the gamelist.
+        #  Rebuilt as gamelist changes, repopulated from entrylists.
+        #self.entrybools = gtk.ListStore(gobject.TYPE_OBJECT)
+        gtk.ListStore.__init__(self, gobject.TYPE_OBJECT)
+
         self.subtitle = None  # Session description, e.g. tournament name
         self.presetlist = GamelistStore()
         self.presetlist.import_file(None)
         self.gamelist = GamelistStore()
         self.entrantlist = EntrantStore()
+        self.entrylists = gtk.ListStore(gobject.TYPE_STRING, gobject.TYPE_OBJECT)  # Pair of (short_code,ListStore); each ListStore is list of references to entrantlist, representing the entrants entering the game (in the sense of (member)).
+        self.entrymap = {}  # Mapping of short_code:string to ListStore, optimizing entrylists.
 
     def do_add_entrant (self, name, game=None, position=None):
         """add entrant to list, returns an Undo action.
@@ -354,55 +378,38 @@ class GamelistPaneling (BasePaneling):
 
 
 
-class SheetModel (gtk.ListStore):
-    """Data model for signups sheet:
-row = (header_label, short_code, ListStore)
-  header_label - shown in matching header for the (sub)list's column
-  short_code - shown next to each checkbox in column
-  ListStore - nested sublist.
-
-ListStore of ListStore:
-[0] -> list of (references to) entrant names
-[1] -> list of bool
-[2] -> list of bool
-...
-
-[0][0] -> first (reference) to entrant name
-[1][0] -> bool for first game for first entrant
-[2][0] -> bool for second game for first entrant
-[3][0] -> bool for third game for first entrant
-[0][1] -> second (reference) to entrant name
-[1][1] -> bool for second game for second entrant
-[2][1] -> bool for third game for second entrant
-...
+class SheetStore (gtk.ListStore):
+    """Data model for signups sheet, GUI-layer wrapper around SignupsStore:
+each row is a column[header] of the GUI.
+[0] -> entrantrefs, list of (references to) entrant names
+[1] -> first game, list of bool
+[2] -> second game, list of bool
 """
     def __init__ (self):
-        gtk.ListStore.__init__(gobject.TYPE_STRING, gobject.TYPE_STRING, gobject.TYPE_OBJECT)
-        self.entrantlist = gtk.ListStore(gobject.TYPE_STRING)  # tied to number of signup rows.
-        self.gamelist_model = None  # Tied to number of signup columns.
-        self.entrybools = {} # Mapping of short_code to ListStore(TYPE_BOOLEAN) -- used by GUI
-        self.entrylist = {}  # Mapping of short_code to ListStore(TYPE_OBJECT) -- list of references to entrants, used as definitive data.
+        gtk.ListStore.__init__(gobject.TYPE_OBJECT)
 
     def clear_entries (self):
+        """Remove non-entrantsref entries (row 1 and later)."""
         culls = [ gtk.TreeRowReference(n) for n in range(1, len(self)) ]
         for cullref in culls:
             self.remove(self.get_iter(cullref.get_path()))
 
-    def set_gamelist_model (self, gamelist_model):
-        """Tie gamelist model to track which list of bools to maintain."""
-        self.gamelist_model = gamelist_model
-        self.clear_entries()
-        for gameinfo in gamelist_model:
-            short_code, game_title, full_desc = gameinfo
-            entries_model = None
-            if short_code in self.entrybools:
-                entries_model = self.entrybools[short_code]
-                # TODO: resize to length of entrants
-                # TODO: repopulate from entries
-            else:
-                entries_model = gtk.ListStore(gobject.TYPE_BOOLEAN)
-                self.entrybools[short_code] = entries_model
-            self.add_entries(short_code, game_title, entries_model)
+#    def set_gamelist_model (self, gamelist_model):
+#        """Tie gamelist model to track which list of bools to maintain."""
+#        self.gamelist_model = gamelist_model
+#        self.clear_entries()
+#        for gameinfo in gamelist_model:
+#            short_code, game_title, full_desc = gameinfo
+#            entries_model = None
+#            if short_code in self.entrybools:
+#                entries_model = self.entrybools[short_code]
+#                # TODO: resize to length of entrants
+#                # TODO: repopulate from entries
+#            else:
+#                entries_model = gtk.ListStore(gobject.TYPE_BOOLEAN)
+#                self.entrybools[short_code] = entries_model
+#            self.add_entries(short_code, game_title, entries_model)
+
 
 
 class EntrantlistPaneling (BasePaneling):
@@ -415,6 +422,7 @@ Expected layout:
     SUBSTRATE = gtk.VBox
     def build_ui (self, ui):
         self.dirty = True
+        self.mdl = SheetStore()
         self.titlebanner = gtk.Label("2 SIGNUPS")
         self.signupsholder = gtk.HBox()
         self.signupsgrid = None
@@ -443,8 +451,12 @@ Expected layout:
         self.semi_rebuild()
 
     def semi_rebuild (self):
-        if self.dirty and self.ui.is_drawable():
+        if self.ui.is_drawable():
+            # Being viewed, rebuild now.
             self.rebuild()
+        else:
+            # Flag for later rebuild when made visible.
+            self.dirty = True
 
     def on_map (self, w, *args):
         if self.dirty:
@@ -512,6 +524,7 @@ Expected layout:
         self.signupsgrid = grid
         self.signupsholder.pack_start(self.signupsgrid, True, True, 0)
         self.signupsgrid.show_all()
+        self.dirty = False
         return
 
 class BracketPaneling (BasePaneling):
@@ -529,6 +542,7 @@ class MainPaneling (BasePaneling):
         ui.set_tab_pos(gtk.POS_LEFT)
         ui.append_page(self.gamelist.ui, gtk.Label("1 Gamelist"))
         ui.append_page(self.entrantlist.ui, gtk.Label("2 Signups"))
+        ui.append_page(self.bracketing.ui, gtk.Label("3 Brackets"))
 
 
 class SignupsMainW (gtk.Window):
